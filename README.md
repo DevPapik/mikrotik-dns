@@ -29,7 +29,7 @@ A comprehensive DNS analytics solution that receives DNS logs from MikroTik rout
 - **Top Domains**: Visual ranking with progress bars and interactive selection
 - **Client Analysis**: Most active clients with detailed query history
 - **Domain Search**: Powerful search with partial matching capabilities
-- **Query Types**: Distribution analysis with special highlighting for unknown queries
+- **Query Types**: Distribution analysis with special highlighting for unknown queries; RouterOS `UNKNOWN (n)` types are mapped to their standard names (e.g. `UNKNOWN (65)` → `HTTPS`)
 - **Network Insights**: Query rates, resolution success rates, client distribution
 
 ### 🔧 **Advanced Functionality**
@@ -45,7 +45,9 @@ A comprehensive DNS analytics solution that receives DNS logs from MikroTik rout
 - **Docker Containerized**: Complete containerization with Docker Compose
 - **API Proxy**: Single port deployment (3000) with backend proxying
 - **Optimized Backend**: Efficient Go API with SQLite and proper CORS
-- **Auto-purging**: Automatically removes data older than 24 hours
+- **Configurable Retention**: Automatically removes data older than `RETENTION_HOURS` (default 24h, `0` = keep forever)
+- **CSV Export**: Stream the full history, or a single client's history, to CSV
+- **History Management**: Delete a single client's queries or clear the whole history from the dashboard
 - **Error Handling**: Robust error handling and null-safe operations
 
 ---
@@ -182,6 +184,18 @@ graph LR
 - `GET /api/domain-clients?domain=<domain>&page=1` - Clients querying specific domain
 - `GET /api/domain-queries?domain=<domain>&partial=true&page=1` - Search domains
 
+### Export & Maintenance
+
+- `GET /api/queries/export` - Stream the whole stored history as CSV (`timestamp,client,domain,type`)
+- `GET /api/client-queries/export?client=<ip>` - Stream one client's stored history as CSV
+- `GET /api/client-queries/count?client=<ip>` - Number of stored queries for a client
+- `DELETE /api/client-queries?client=<ip>` - Delete all stored queries of one client
+- `DELETE /api/queries` - Clear the whole query history (schema, indexes and configuration are kept)
+- `GET /api/retention` - Configured retention (`retention_hours`, `unlimited`, `label`)
+
+All statistics and listings cover the whole stored history, i.e. everything within `RETENTION_HOURS`.
+Destructive endpoints only accept the `DELETE` method; the API has no authentication, so expose port 8080 only to trusted networks (the dashboard on port 3000 proxies it).
+
 ---
 
 ## 🎨 Dashboard Features
@@ -219,6 +233,12 @@ graph LR
 - **Complete Query Log**: Chronological list of all DNS queries
 - **Table Layout**: Organized columns for time, client, domain, type
 - **Responsive Design**: Proper column widths regardless of data length
+- **Export all CSV / Clear all queries**: Download the entire stored history or wipe it (with confirmation)
+
+### Client Actions
+
+- **Export CSV**: Download every stored query of the selected client (not just the current page)
+- **Delete queries**: Remove all stored queries of the selected client after confirmation; other clients are untouched
 
 ---
 
@@ -229,6 +249,20 @@ graph LR
 - `BACKEND_URL`: Internal backend URL for API proxy (default: `http://mikrotik-dns-backend:8080`)
 - `DATABASE_PATH`: SQLite database location (default: `/data/queries.db`)
 - `DNS_SERVER`: Custom DNS server for resolution testing (optional, uses system default if not set)
+- `RETENTION_HOURS`: How long DNS queries are stored, in hours (default: `24`)
+
+### Retention
+
+| `RETENTION_HOURS` | Behaviour                                           |
+| ----------------- | --------------------------------------------------- |
+| unset             | 24 hours (same as previous versions)                |
+| `24`              | keep 24 hours                                       |
+| `168`             | keep 7 days                                         |
+| `720`             | keep 30 days                                        |
+| `0`               | keep forever, automatic purge is disabled           |
+| invalid/negative  | warning in the log, falls back to 24 hours          |
+
+Old records are purged at startup and then once per hour, in small batches so incoming logs are never blocked for long. The dashboard, search, client history and CSV exports always show the complete stored history; the configured retention is displayed in the dashboard header.
 
 ### Auto-refresh Settings
 
@@ -248,6 +282,9 @@ graph LR
 # Backend
 go mod tidy
 go run main.go
+
+# Backend tests
+go test ./...
 
 # Frontend (in separate terminal)
 cd page
@@ -289,6 +326,7 @@ services:
     environment:
       - DNS_SERVER=${DNS_SERVER:-}
       - DATABASE_PATH=/data/queries.db
+      - RETENTION_HOURS=${RETENTION_HOURS:-24}
       - PORT=3000
       - NODE_ENV=production
     healthcheck:
@@ -303,6 +341,7 @@ services:
 
 - `DATABASE_PATH`: SQLite database location (default: `/data/queries.db`)
 - `DNS_SERVER`: Custom DNS server for resolution testing (optional)
+- `RETENTION_HOURS`: Hours of DNS history to keep, `0` = unlimited (default: `24`)
 - `PORT`: Frontend port (default: `3000`)
 - `NODE_ENV`: Node.js environment (default: `production`)
 
@@ -310,7 +349,7 @@ services:
 
 ## 🗄️ Database Schema
 
-SQLite database with automatic cleanup (24h retention):
+SQLite database with automatic cleanup (`RETENTION_HOURS`, 24h by default):
 
 ```sql
 CREATE TABLE queries (
@@ -320,7 +359,12 @@ CREATE TABLE queries (
     domain TEXT,
     type TEXT
 );
+CREATE INDEX idx_queries_timestamp ON queries(timestamp);
+CREATE INDEX idx_queries_client_timestamp ON queries(client, timestamp);
+CREATE INDEX idx_queries_domain_timestamp ON queries(domain, timestamp);
 ```
+
+The indexes are created with `CREATE INDEX IF NOT EXISTS` on startup, so an existing `queries.db` from an older version is upgraded in place without any manual migration.
 
 ---
 

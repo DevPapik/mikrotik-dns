@@ -8,7 +8,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -19,6 +19,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import {
   Activity,
   Users,
@@ -35,6 +45,8 @@ import {
   Zap,
   Network,
   BarChart3,
+  Download,
+  Trash2,
 } from "lucide-react";
 import { AnimatedNumber } from "@/components/animated-number";
 import { DarkModeSwitch } from "@/components/dark-mode-switch";
@@ -87,6 +99,16 @@ interface DomainWithResolution {
   resolution: DNSResolution;
 }
 
+interface RetentionInfo {
+  retention_hours: number;
+  unlimited: boolean;
+  label: string;
+}
+
+type PendingDelete =
+  | { kind: "client"; client: string; count: number | null }
+  | { kind: "all"; count: number };
+
 export default function DNSDashboard() {
   const { toast } = useToast();
   const [topDomains, setTopDomains] = useState<DomainData[]>([]);
@@ -115,6 +137,11 @@ export default function DNSDashboard() {
   const [domainClients, setDomainClients] = useState<DomainClient[]>([]);
   const [domainPage, setDomainPage] = useState(1);
   const [activeTab, setActiveTab] = useState("overview");
+  const [retention, setRetention] = useState<RetentionInfo | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(
+    null,
+  );
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const fetchData = async () => {
     const apiUrl = "";
@@ -197,9 +224,22 @@ export default function DNSDashboard() {
     }
   };
 
+  const fetchRetention = async () => {
+    try {
+      const res = await fetch(`/api/retention`);
+      const data = await res.json();
+      if (data && typeof data.retention_hours === "number") {
+        setRetention(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch retention:", error);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     fetchAllQueries(1);
+    fetchRetention();
   }, []);
 
   useEffect(() => {
@@ -325,9 +365,107 @@ export default function DNSDashboard() {
     return queryTypes.reduce((sum, item) => sum + item.count, 0);
   };
 
+  const isUnknownType = (type: string) => type.startsWith("UNKNOWN");
+
   const getUnknownQueries = () => {
     if (!queryTypes || !Array.isArray(queryTypes)) return 0;
-    return queryTypes.find((t) => t.type === "UNKNOWN")?.count || 0;
+    return queryTypes
+      .filter((t) => isUnknownType(t.type))
+      .reduce((sum, item) => sum + item.count, 0);
+  };
+
+  // Streams the CSV straight from the backend through a regular browser
+  // download, so exports of any size never pass through JavaScript memory.
+  const downloadCSV = (url: string) => {
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "";
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const exportClientCSV = (client: string) => {
+    const params = new URLSearchParams({ client });
+    downloadCSV(`/api/client-queries/export?${params}`);
+  };
+
+  const exportAllCSV = () => {
+    downloadCSV(`/api/queries/export`);
+  };
+
+  const askDeleteClient = async (client: string) => {
+    setPendingDelete({ kind: "client", client, count: null });
+    try {
+      const params = new URLSearchParams({ client });
+      const res = await fetch(`/api/client-queries/count?${params}`);
+      const data = await res.json();
+      const count = typeof data?.count === "number" ? data.count : null;
+      setPendingDelete((current) =>
+        current && current.kind === "client" && current.client === client
+          ? { ...current, count }
+          : current,
+      );
+    } catch (error) {
+      console.error("Failed to count client queries:", error);
+    }
+  };
+
+  const askClearAll = () => {
+    // Total is already known from the query-type statistics.
+    setPendingDelete({ kind: "all", count: getTotalQueries() });
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setIsDeleting(true);
+    try {
+      const url =
+        pendingDelete.kind === "client"
+          ? `/api/client-queries?${new URLSearchParams({ client: pendingDelete.client })}`
+          : `/api/queries`;
+      const res = await fetch(url, { method: "DELETE" });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const deleted: number = data?.deleted ?? 0;
+
+      if (pendingDelete.kind === "client") {
+        setClientQueries([]);
+        setSelectedClient("");
+        setCurrentPage(1);
+        toast({
+          title: "Queries deleted",
+          description: `Deleted ${deleted.toLocaleString()} DNS queries for ${pendingDelete.client}`,
+        });
+      } else {
+        setAllQueries([]);
+        setClientQueries([]);
+        setSelectedClient("");
+        setSelectedDomain("");
+        setDomainClients([]);
+        setSearchResults([]);
+        setCurrentPage(1);
+        setDomainPage(1);
+        toast({
+          title: "History cleared",
+          description: `Deleted ${deleted.toLocaleString()} stored DNS queries`,
+        });
+        fetchAllQueries(1);
+      }
+      setPendingDelete(null);
+      fetchData();
+    } catch (error) {
+      console.error("Failed to delete queries:", error);
+      toast({
+        title: "Delete failed",
+        description: "Could not delete DNS queries",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   return (
@@ -340,7 +478,8 @@ export default function DNSDashboard() {
               DNS Analytics Dashboard
             </h1>
             <p className="text-muted-foreground">
-              MikroTik DNS Query Analytics - Last 24 Hours
+              MikroTik DNS Query Analytics - Stored History
+              {retention && ` · Retention: ${retention.label}`}
             </p>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -447,7 +586,7 @@ export default function DNSDashboard() {
                     <AnimatedNumber value={getTotalQueries()} />
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    Last 24 hours
+                    All stored queries
                   </div>
                 </div>
               </div>
@@ -559,7 +698,7 @@ export default function DNSDashboard() {
                       queryTypes.slice(0, 6).map((item, index) => {
                         const percentage =
                           (item.count / getTotalQueries()) * 100;
-                        const isUnknown = item.type === "UNKNOWN";
+                        const isUnknown = isUnknownType(item.type);
                         return (
                           <div key={item.type} className="space-y-2">
                             <div className="flex items-center justify-between">
@@ -1114,6 +1253,27 @@ export default function DNSDashboard() {
                         </Button>
                       </div>
 
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => exportClientCSV(selectedClient)}
+                          className="flex items-center gap-2"
+                        >
+                          <Download className="h-4 w-4" />
+                          Export CSV
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => askDeleteClient(selectedClient)}
+                          className="flex items-center gap-2"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                          Delete queries
+                        </Button>
+                      </div>
+
                       <div className="overflow-x-auto">
                         <table className="w-full">
                           <thead>
@@ -1157,7 +1317,7 @@ export default function DNSDashboard() {
                                     >
                                       {query.type}
                                     </Badge>
-                                    {query.type === "UNKNOWN" && (
+                                    {isUnknownType(query.type) && (
                                       <Badge
                                         variant="destructive"
                                         className="text-xs"
@@ -1209,10 +1369,34 @@ export default function DNSDashboard() {
           <TabsContent value="queries" className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>All DNS Queries</CardTitle>
-                <CardDescription>
-                  Recent DNS queries from all clients
-                </CardDescription>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="space-y-1.5">
+                    <CardTitle>All DNS Queries</CardTitle>
+                    <CardDescription>
+                      Recent DNS queries from all clients
+                    </CardDescription>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={exportAllCSV}
+                      className="flex items-center gap-2"
+                    >
+                      <Download className="h-4 w-4" />
+                      Export all CSV
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={askClearAll}
+                      className="flex items-center gap-2"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Clear all queries
+                    </Button>
+                  </div>
+                </div>
               </CardHeader>
               <CardContent>
                 <div className="overflow-x-auto">
@@ -1234,6 +1418,16 @@ export default function DNSDashboard() {
                       </tr>
                     </thead>
                     <tbody>
+                      {allQueries.length === 0 && (
+                        <tr>
+                          <td
+                            colSpan={4}
+                            className="p-8 text-center text-slate-500 dark:text-slate-400"
+                          >
+                            No stored DNS queries
+                          </td>
+                        </tr>
+                      )}
                       {allQueries.map((query, index) => (
                         <tr
                           key={index}
@@ -1273,7 +1467,7 @@ export default function DNSDashboard() {
                               <Badge variant="outline" className="text-xs">
                                 {query.type}
                               </Badge>
-                              {query.type === "UNKNOWN" && (
+                              {isUnknownType(query.type) && (
                                 <Badge
                                   variant="destructive"
                                   className="text-xs"
@@ -1556,6 +1750,47 @@ export default function DNSDashboard() {
           </TabsContent>
         </Tabs>
       </div>
+
+      <AlertDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {pendingDelete?.kind === "all"
+                ? "Delete all DNS query history?"
+                : pendingDelete?.count != null
+                  ? `Delete ${pendingDelete.count.toLocaleString()} DNS queries for ${pendingDelete.client}?`
+                  : `Delete DNS queries for ${pendingDelete?.client}?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete?.kind === "all"
+                ? `This will permanently delete ${pendingDelete.count.toLocaleString()} stored DNS queries.`
+                : "This will permanently delete all stored DNS queries for this client. Other clients are not affected."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isDeleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className={buttonVariants({ variant: "destructive" })}
+              disabled={isDeleting}
+              onClick={(e) => {
+                e.preventDefault();
+                confirmDelete();
+              }}
+            >
+              {isDeleting
+                ? "Deleting..."
+                : pendingDelete?.kind === "all"
+                  ? "Delete all"
+                  : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
