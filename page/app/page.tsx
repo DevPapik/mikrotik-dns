@@ -495,7 +495,7 @@ export default function DNSDashboard() {
                 size="default"
                 onClick={() =>
                   window.open(
-                    "https://github.com/publi0/mikrotik-dns",
+                    "https://github.com/DevPapik/mikrotik-dns",
                     "_blank",
                   )
                 }
