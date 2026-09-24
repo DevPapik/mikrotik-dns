@@ -1,5 +1,7 @@
 # ---------- Frontend build ----------
-FROM node:20-alpine AS web-build
+# Build the frontend natively on the build host: the Next.js output is
+# architecture independent, and running next build under QEMU is slow and flaky.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS web-build
 WORKDIR /app/page
 # Copy package files first for better caching
 COPY page/package*.json ./
