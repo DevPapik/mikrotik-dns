@@ -58,7 +58,7 @@ A comprehensive DNS analytics solution that receives DNS logs from MikroTik rout
 
 ```bash
 # Clone the repository
-git clone https://github.com/publi0/mikrotik-dns.git
+git clone https://github.com/DevPapik/mikrotik-dns.git
 cd mikrotik-dns
 
 # Start with Docker Compose
@@ -78,7 +78,7 @@ docker run -d \
   -p 3000:3000 \
   -p 5354:5354/udp \
   -v $(pwd)/data:/data \
-  ghcr.io/publi0/mikrotik-dns:latest
+  ghcr.io/devpapik/mikrotik-dns:latest
 
 # View logs
 docker logs -f mikrotik-dns
@@ -315,7 +315,7 @@ The application is available as a single Docker image with both frontend and bac
 # docker-compose.yml
 services:
   mikrotik-dns:
-    image: ghcr.io/publi0/mikrotik-dns:latest
+    image: ghcr.io/devpapik/mikrotik-dns:latest
     container_name: mikrotik-dns
     restart: unless-stopped
     ports:

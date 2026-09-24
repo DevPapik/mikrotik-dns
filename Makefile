@@ -71,7 +71,7 @@ build-local: build-backend build-frontend
 # Single image commands (Primary)
 build:
 	@echo "🔥 Building single Docker image..."
-	docker build -t ghcr.io/publi0/mikrotik-dns:dev .
+	docker build -t ghcr.io/devpapik/mikrotik-dns:dev .
 	@echo "✅ Single image built successfully!"
 
 up:
@@ -96,7 +96,7 @@ run:
 		-p 3000:3000 \
 		-p 5354:5354/udp \
 		-v $(PWD)/data:/data \
-		ghcr.io/publi0/mikrotik-dns:dev
+		ghcr.io/devpapik/mikrotik-dns:dev
 	@echo "✅ Container started!"
 	@echo "🌐 Web dashboard available at: http://localhost:3000"
 
